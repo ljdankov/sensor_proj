@@ -96,11 +96,14 @@ void decider(int serialData){
     case 'E': //turn on accelerometer
         accelOn=true;
         nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9,X,Y,Z";
+        break;
     case 'F': //turn off accelerometer
         accelOn=false;
         nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9";
+        break;
     case 'G': //give current uptime
         uptime();
+        break;
     default:
         SerialBT.flush();
         break;        
