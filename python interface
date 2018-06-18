@@ -1,0 +1,467 @@
+from threading import Thread
+import csv
+import serial
+import serial.tools.list_ports
+import Leap
+import time
+import collections
+
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+from Tkinter import *
+import ttk
+from ttk import Frame
+from PIL import Image, ImageTk
+import tkFileDialog
+import tkMessageBox
+from ScrolledText import *
+
+import numpy as np
+import pandas as pd
+
+def scan_serial():
+        #######################################################
+        #Scans current list off serial ports available on computer.
+        # I had to declare it globally in order for it to work properly
+        ##############################################################
+        print "Getting Serial"
+        serialNames = []
+        serialPorts = (list(serial.tools.list_ports.comports()))
+        for index in range(len(serialPorts)):
+            serialNames.append(serialPorts[index][0])
+        return serialNames
+    
+class Progress():
+    global app
+    """ threaded progress bar for tkinter gui """
+    def __init__(self, parent, row, column, columnspan):
+        self.maximum = 125
+        self.interval = 10
+        self.progressbar = ttk.Progressbar(parent, orient=HORIZONTAL,
+                                           mode="determinate",
+                                           maximum=self.maximum)
+        self.progressbar.grid(row=row, column=column,
+                              columnspan=columnspan, sticky="we")
+        self.thread = Thread()
+        self.thread.__init__(target=self.progressbar.start(self.interval),
+                             args=())
+        self.thread.start()
+        self.pb_clear()
+
+    def pb_stop(self):
+        """ stops the progress bar """
+        if not self.thread.isAlive():
+            VALUE = self.progressbar["value"]
+            self.progressbar.stop()
+            self.progressbar["value"] = VALUE
+
+    def pb_start(self):
+        """ starts the progress bar """
+        if not self.thread.isAlive():
+            VALUE = self.progressbar["value"]
+            self.progressbar.configure(mode="determinate",
+                                       maximum=self.maximum,
+                                       value=VALUE)
+            self.progressbar.start(self.interval)
+
+    def pb_clear(self):
+        """ stops the progress bar """
+        if not self.thread.isAlive():
+            self.progressbar.stop()
+            self.progressbar.configure(mode="determinate", value=0)
+
+    def pb_complete(self):
+        """ stops the progress bar and fills it """
+        if not self.thread.isAlive():
+            self.progressbar.stop()
+            self.progressbar.configure(mode="determinate",
+                                       maximum=self.maximum,
+                                       value=self.maximum)
+    def pb_sampling(self):
+        for i in range(1,5):
+            app.label10.config(text = "Make a Fist")
+            if not self.thread.isAlive():
+                VALUE = self.progressbar["value"]
+                self.progressbar.configure(mode="determinate",maximum=self.maximum,value=VALUE)
+                self.progressbar.start(self.interval)
+                if VALUE == self.maximum:
+                    self.pb_stop()
+                    app.label10.config(text = "Open Hand")
+                    delay(3)
+                    
+class SampleListener(Leap.Listener):
+    global app 
+    def on_init(self, controller):
+        self.handType="None"
+        self.palm=""
+        self.fist=0
+        self.hand_data=['Normal','Closed']
+    
+    def on_frame(self, controller):
+        frame = controller.frame()
+        for hand in frame.hands:
+            self.handType = "Left hand" if hand.is_left else "Right hand"
+            self.palm = hand.palm_normal
+            self.fist = hand.grab_strength
+            
+class serialPlot:
+    ############################################################################
+    #The serial connection and plot update part of the code lives here. 
+    ############################################################################   
+    def __init__(self):
+        global app
+        self.baud = 9600 # Note that this will likely always be a value of 9600
+        self.plotMaxLength = 100
+        self.plotTimer = "N/A" # Sets a default text value as we won't have data for hertz
+        self.previousTimer = 0 # sets a default previous timerr value to avoid math errors
+        self.ymin=0
+        self.ymax=1000
+        self.xmin=0
+        self.xmax=100
+        self.numPlots=1
+        self.serialData=[]
+        self.lines=[]
+        self.csvData = []
+        self.lineLabel=['']
+        self.leapLabel=['']
+        self.data = [] # an empty list that will hold a collection of deque objects
+        self.thread = None
+        self.isRun = False
+        self.isReceiving = False
+        self.initNames=False
+        self.newNames=False
+        self.newData=False
+        self.listener = SampleListener()
+        self.controller = Leap.Controller()
+        self.device=self.controller.devices[0]
+        self.controller.add_listener(self.listener)
+        self.listener.on_frame(self.controller)
+        self.gotLeap=False
+        self.csvName=""
+        self.recording=False
+        self.newlim=True
+        self.Plotting=False
+        
+    def serialInit(self, port):
+        app.text_message.insert(INSERT, 'Trying to connect to: ' + str(port) + ' at ' + str(self.baud) + ' BAUD.\n')
+        try:
+            self.serialConnection = serial.Serial(port, self.baud)
+            app.text_message.insert(INSERT,'Connected to ' + str(port) + ' at ' + str(self.baud) + ' BAUD.\n')
+            self.readSerialStart()
+        except:
+            app.text_message.insert(INSERT,"Failed to connect with " + str(port) + ' at ' + str(self.baud) + ' BAUD.\n')
+
+    def readSerialStart(self):
+        #######################################################################
+        # Called when the serial port is first initialized
+        ######################################################################
+        self.isRun = True
+        if self.thread == None:
+            app.text_message.insert(INSERT,"Initializing...\n")
+            self.thread = Thread(target=self.backgroundThread) # Make a thread to read serial port in the background
+            self.thread.start()
+            self.sendSerialData('D')  # Stop reading sensors on teensy. Included in case of 'non graceful exit'
+            self.sendSerialData('A') # Request port names
+                
+    def backgroundThread(self):
+        #############################################
+        # Retrieve data from serial port if there is data and process data
+        #############################################
+        while (self.isRun):
+            lineIn = self.serialConnection.readline()
+            lineIn=lineIn.rstrip() # clear extraneous characters 
+            self.serialData=lineIn # Save to a variable that can be accessed by the rest off application
+            if len(lineIn)>0:
+                if lineIn[0]=='T':
+                    print self.serialData
+                    # if the first character is a P then we set flag to initialize a new data set
+                    self.newNames=True
+                    self.Plotting=False
+                    self.initPlot()
+                elif lineIn[0].isdigit() and self.Plotting==True:
+                    # If the first character is a digit we flag that a new line of sensor readings has been taken
+                    self.newData=True
+                else:
+                    app.text_message.insert(INSERT,lineIn+'\n')
+            self.isReceiving = True
+            
+    def initPlot(self):
+        ##########################################################################
+        # This uses global variables I should probably clean that up at some point.
+        # It's purpose it to clean up the old plot and initialize a new one.
+        ##########################################################################
+        global ax
+        if self.newNames==True: # Only do if we have requested new names
+            if len(self.lineLabel)>1: # clear previous data
+                plt.cla() # Reset the plot
+                self.lineLabel=[] # Clear our previous line labels
+                self.data=[] # Clear our previous data
+                self.lines=[] # Reset our lines
+                ax.set_ylim(self.ymin,self.ymax) # reset axis limtits
+                ax.set_xlim(self.xmin,self.xmax) # See previous
+                self.timeText = ax.text(0.70, 0.95, '', transform=ax.transAxes) # include frequency data on plot
+                self.leapLabel=['']
+            self.lineLabel=self.serialData.split(',') # Split data on comma, this will be total number of incoming data points
+            for i in range(1,len(self.lineLabel)):
+                self.lines.append(ax.plot([], [], label=self.lineLabel[i])[0])
+            plt.legend(loc="upper left")
+            self.newlim=True
+            self.Plotting=True
+            self.newNames=False
+            print self.lineLabel
+            self.lastPlot=len(self.lineLabel)-1 # Numplots are the number of sensor plots we are making. Note that we do not plot the time. this also indicates end of sensor data string
+            self.device=self.controller.devices[0] # Get data about leap controller
+            if self.device.is_valid: # only record leap data if currently active
+                self.leapLabel=['Xangle','Zangle','Yangle','Fist']
+            else:
+                self.leapLabel=['']
+            self.lineLabel[len(self.lineLabel):len(self.lineLabel)]=self.leapLabel # pin any leap data to end of line labels
+            print self.lineLabel
+            for i in range(len(self.lineLabel)):# all items in linelabel need to be saved
+                self.data.append(collections.deque([0] * self.plotMaxLength, maxlen=self.plotMaxLength)) 
+            self.initNames=True # flag to let us know that we now have names
+            if self.recording==True:
+                self.file=open(self.filename,'ab')
+                self.writer=csv.writer(self.file)
+                self.writer.writerow(self.lineLabel)
+                print "Now Recording?"
+                self.sendSerialData('C')
+            
+    def getSerialData(self, frame, lines, lineLabel, timeText):
+        #######################################################################
+        # Called to update the plot with new serial data
+        #######################################################################
+        global ax
+        self.timeText.set_text('Plot Interval = ' + str(self.plotTimer) + 'Hz')    # Helpful for seeing incoming data frequency. Is this thing fast enough?    
+        if self.newData==True:# If new data is flagged, add to plot
+            privateData=self.serialData.split(',') 
+            privateData=map(float,privateData) # converts string data to floats
+            # this section adjusts plot scales to accomodate for data size
+            ymax_new=max(privateData[1:len(privateData)]) 
+            ymin_new=min(privateData[1:len(privateData)])
+            if self.newlim==True:
+                self.ymax=ymax_new*1.5;
+                self.ymin=ymin_new*.5
+                ax.set_ylim(self.ymin,self.ymax)
+                self.startTime=privateData[0]
+                self.newlim=False
+            if ymax_new>self.ymax:
+                self.ymax=ymax_new
+                ax.set_ylim(self.ymin,self.ymax)
+            if ymin_new<self.ymin:
+                self.ymin=ymin_new
+                ax.set_ylim(self.ymin,self.ymax)
+            #update time object for plot
+            if self.lineLabel[0]=='Time':
+                privateData[0]=(privateData[0]-self.startTime)/1000 # First subtract start time from the first data entry and convert to seconds
+                self.plotTimer=privateData[0]-self.previousTimer
+                if self.plotTimer>0: #don't divide by zero. Its impolite.
+                   self.plotTimer=1/self.plotTimer
+                   self.previousTimer=privateData[0]
+            if len(self.leapLabel)>1:
+                hand_dat=[]                
+                app.label5.config(text = self.listener.handType)
+                app.label6.config(text = self.listener.palm)
+                for i in range(0,3):
+                    try:
+                        hand_dat.append(self.listener.palm[i])
+                    except:
+                        hand_dat.append('NA')
+                hand_dat.append(self.listener.fist) 
+                privateData[self.numPlots+1:self.numPlots+1]=hand_dat
+                if self.listener.fist >.9:
+                    app.label7.config(text = "Fist")
+                if self.listener.fist<.1:
+                    app.label7.config(text = "Open")
+                if self.listener.fist>=.1 and self.listener.fist<=.9:
+                    app.label7.config(text = self.listener.fist)
+            #plot the actual incoming data
+            if self.recording==True:
+                self.writer.writerow(privateData)
+            for i in range(len(privateData)):
+                self.data[i].append(privateData[i])    # we get the latest data point and append it to our array
+                if i>=1 and i<self.lastPlot: #only plot stuff that has lines
+                    self.lines[i].set_data(range(self.plotMaxLength), self.data[i])
+            self.newData=False
+                
+    def sendSerialData(self, data):
+        #######################################################################
+        # Sends outgoing serial data.
+        # A few tests are implemented here in case we try to send data that requires further action.
+        #######################################################################
+        # Note that this section was meant to send stops if certain data was sent but prevented initialization
+        #if data == 'A' or data =='H' or data =='I' or data == 'R':
+        #    these actions are likely to reqire reinitializing the plot. By sending a 'stop' command first, we prevent incoming data from jumbling up the application
+        #    print "sending a Stop"
+        #    stop='D'
+        #    self.serialConnention.write(stop.encode('utf-8'))
+        data=data+'\n'
+        self.serialConnection.write(data.encode('utf-8'))
+        
+
+    def close(self):
+        #######################################################################
+        #Called when closing the connection or the application, future versions may benefit from having two separate functions for this
+        #######################################################################
+        self.sendSerialData('D')
+        self.isRun = False
+        self.Plotting==False
+        self.thread.join()
+        self.serialConnection.close()
+        
+    def save(self):
+        ##########################################################################
+        # Combines port names and sensor data into single dataframe and saves to an excel file
+        ##########################################################################
+        self.file.close()
+        self.recording=False
+        
+class Window(Frame):
+    
+    def __init__(self, figure, master, SerialReference):
+        Frame.__init__(self, master)
+        Frame.__name__
+        self.entry = None
+        self.setPoint = None
+        self.master = master        # a reference to the master window
+        self.serialReference = SerialReference      # keep a reference to our serial connection so that we can use it for bi-directional communicate from this class
+        
+        #self.initWindow(figure)     # initialize the window with our settings
+        
+    #def initWindow(self, figure):        
+        self.master.title("Real Time Plot")
+        
+        # Create frame to hold the plot
+        frame1=Frame(master=self.master,borderwidth=2, relief="sunken")
+        frame1.grid(row=0,column=0)
+        #Insert canvas into the frame
+        canvas = FigureCanvasTkAgg(figure, master=frame1)
+        canvas.get_tk_widget().pack(side=TOP, fill=BOTH, expand=1)
+        
+        #Create a second frame to hold our interface Note that this part never displayed properly and I ran out of time to mess around with it.
+        frame2=Frame(master=self.master,borderwidth=2, relief="sunken")
+        frame2.grid(row=1,column=0)
+        frame3=Frame(master=self.master, borderwidth=2, relief="sunken")
+        frame3.grid(row=0,column=1,rowspan=2)
+        image2="C:\Users\shado\Documents\python\close_fist.gif"
+        image1="C:\Users\shado\Documents\python\open_hand2.jpg"
+        self.image2 = ImageTk.PhotoImage(Image.open("C:\Users\shado\Documents\python\open_hand2.jpg"))
+        
+        
+        # create out widgets in the master frame
+        label1 = Label(frame2, text="Select Serial Port:")
+        label1.grid(row=0,column=1)
+        
+        label2 = Label(frame2, text="Important Messages:")
+        label2.grid(row=0,column=5)
+        self.text_message = ScrolledText(frame2, height=5, width=30)
+        self.text_message.grid(row=1,column=5,rowspan='4')
+        
+        scan_button = Button(frame2, text="Scan Serial", command=self.scan_ports,width = 10, padx=5, pady=2)        
+        scan_button.grid(row=1,column=0)
+
+        self.cur_serial = ttk.Combobox(frame2, textvariable='', state="readonly",width = 10)
+        self.cur_serial.grid(row=1,column=1)
+
+        connect = Button(frame2, text = "Connect", command=self.connect, width = 10, padx=5, pady=2)
+        connect.grid(row=1,column=2)
+        #QuitButton = Button(frame2, text='Disconnect', command=self.serialReference.close,width = 10, padx=5, pady=2)
+        recordButton = Button(frame2, text='Record', command=self.record,width = 10, padx=5, pady=2)
+        recordButton.grid(row=1,column=3)
+        
+        lbl3 = Label(frame2, text="Command")
+        lbl3.grid(row=2,column=0)
+        self.entry = Entry(frame2,width = 13)
+        self.entry.insert(0, 'B')     # (index, string)
+        self.entry.grid(row=2,column=1)
+        SendButton = Button(frame2, text='Send', command=self.cmd,width = 10, padx=5, pady=2)
+        SendButton.grid(row=2,column=2)
+        SaveButton = Button(frame2, text='Save', command=self.save,width = 10, padx=5, pady=2)
+        SaveButton.grid(row=2,column=3)
+        label9=Label(frame3,text=("Hand"))
+        label9.grid(row=0,column=0)
+        label4 = Label(frame3, text="Vector")
+        label4.grid(row=1,column=0)
+        label8 = Label(frame3, text="Open/Close")
+        label8.grid(row=2,column=0)
+
+        self.label5 = Label(frame3, text="No Hand:")
+        self.label5.grid(row=0,column=1)        
+        self.label6 = Label(frame3, text="No Vector",width = 30)
+        self.label6.grid(row=1,column=1,columnspan=2)
+        self.label7 = Label(frame3, text="No State", width=13)
+        self.label7.grid(row=2,column=1)
+        self.label10=Label(frame3,text="Hand Position")
+        self.label10.grid(row=3,column=0)
+        self.prog_bar = Progress(frame3, row=4, column=0, columnspan=3)
+        self.label11=Label(frame3, text="LETTER COMMANDS: A for port names\n B for port values\n C for Constant Read\n D for Stop Read\n E for data Smoothing\n F to stop Smoothing\n H to start Filtering\n I to stop Filtering\n R to reset cap settings (untested)\n\n BUTTON COMMANDS\n Scan gets list of Com Ports\n Connect attempts a seial connection to selected port\n Send sends current letter command to Arduino\n Record starts a new Recording Session\n Save stops recording and saves data\n") 
+        self.label11.grid(row=5,column=0,columnspan=3)
+    def scan_ports(self):
+        ########################################################
+        # Updates list of serial ports on computer
+        ######################################################
+        serialNames= []
+        serialNames= scan_serial()
+        self.cur_serial['values'] = serialNames
+        if (serialNames != []):
+            self.cur_serial.current(0)
+    
+    def connect(self):
+        ########################################################
+        # Sends connection request to serialplot
+        ######################################################
+        con_serial = self.cur_serial.get()
+        self.serialReference.serialInit(con_serial)
+        
+    def cmd(self):
+        ########################################################
+        # Sends commands to the teensy
+        ######################################################
+        self.serialReference.sendSerialData(self.entry.get())     # '%' is our ending marker
+
+    def save(self):
+        ########################################################
+        # Sends a stop command to the arduino to prevent messy data streams and calls save data
+        ######################################################
+        self.serialReference.sendSerialData('D')        
+        self.serialReference.save()
+
+    def record(self):
+        # note that this location probably does not exist on your computer. Change to directory of your choice.
+        self.serialReference.filename= tkFileDialog.asksaveasfilename(initialdir = "C:/Users/Shado/Python/data",title = "Select file",filetypes = (("text","*.csv"),("all files","*.*")))
+        self.serialReference.filename=self.serialReference.filename+".csv"
+        self.serialReference.recording=True
+        self.serialReference.sendSerialData('H')
+
+def main():
+    global ax
+    global plt
+    global app
+    plotNow=False
+    portName = 'COM11'
+    baudRate=115200
+    s = serialPlot()   # initializes all required variables
+    if s.initNames==False:
+        numPlots=s.numPlots
+        lineLabel=s.lineLabel
+    
+    # This builds a dummy plot to initialize window. Dummy plot is replaced once we are connected
+    pltInterval = 10 # Period at which the plot animation updates [ms]
+    fig = plt.figure(figsize=(6, 6))
+    ax = plt.axes(xlim=(s.xmin, s.xmax), ylim=(s.ymin,s.ymax))
+    ax.set_title('My Brain Hurts')
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Sensor Data")
+    # put our plot onto Tkinter's GUI
+    root = Tk() # initialize Tk window
+    app = Window(fig, root,s) # initialize App
+    s.app=app # Refference to the app placed in the serial data object
+    s.timeText = ax.text(0.70, 0.95, '', transform=ax.transAxes) #initialize frequency labeling in the serial object
+    anima = animation.FuncAnimation(fig, s.getSerialData, fargs=(s.lines, s.lineLabel, s.timeText), interval=pltInterval)    # fargs has to be a tuple
+    root.mainloop()   # use this instead of plt.show() since we are encapsulating everything in Tkinter
+    #s.close()
+  
+if __name__ == '__main__':
+    main()
