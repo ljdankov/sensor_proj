@@ -11,14 +11,14 @@
 
 BluetoothSerial SerialBT;
 int capPins[]={14,32,15,33,27,12,13}; // All Capacitive Pins available on the ESP 32. Edit pins to be used here
-String capName[]={"Touch_0,","Touch_2,","Touch_3,","Touch_4,","Touch_5,","Touch_6,","Touch_7,","Touch_8,","Touch_9,"};
-String nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9";
+String capName[]={"Touch_0,","Touch_2,","Touch_3,","Touch_4,","Touch_5,","Touch_6,","Touch_7,","Touch_8,"};
+String nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Time,";
 String valOut="";
 int capActive=7;
 unsigned long curr; //this is a time holder used to monitor uptime on battery power
 boolean constRun=false; //this tells whether or not to simply run as fast as data can be obtained
 boolean accelOn=false; //tells whether or not to run accelerometer
-boolean uptimeOn=false; //
+boolean recTime=false; //toggle to tell whether or not to record timestamp
 Adafruit_BNO055 bno = Adafruit_BNO055();
 
 void setup() {
@@ -29,17 +29,19 @@ void setup() {
 void loop() {
   if (SerialBT.available() > 0){int serialData = SerialBT.read(); decider(serialData);}  
   if(constRun){getVals();}
-  delayMicroseconds(100);
+  delayMicroseconds(1000);
 }
 
 void getVals(){//cycle through the active capacitor pins and form CSV string of readings 
   int currentRead=0;
   String valOut="";
+  if(recTime==true){curr=millis(); valOut+=curr; valOut+=",";}
   for(int x=0;x<capActive; x++){
     currentRead=touchRead(capPins[x]);//read active ports
     valOut+=currentRead;//append reading to value out
-    if (x<capActive-1){valOut+="," ;}
+    if( x <capActive-1){valOut+=",";} 
   }
+  
   if(accelOn){
     imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
     valOut+=",";
@@ -57,7 +59,8 @@ void uptime(){
  long hours=0;
  long mins=0;
  long secs=0;
- curr = millis()/1000; //convect milliseconds to seconds
+ curr = millis();
+ secs=curr/1000;//convect milliseconds to seconds
  mins=secs/60; //convert seconds to minutes
  hours=mins/60; //convert minutes to hours
  days=hours/24; //convert hours to days
@@ -96,13 +99,25 @@ void decider(int serialData){
     case 'E': //turn on accelerometer
         accelOn=true;
         nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9,X,Y,Z";
+        SerialBT.println(nameOut);
         break;
     case 'F': //turn off accelerometer
         accelOn=false;
         nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9";
+        SerialBT.println(nameOut);
         break;
     case 'G': //give current uptime
         uptime();
+        break;
+    case 'H': //include time in output string this is used for the interface with python data collection tool
+        nameOut="Time,Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9";
+        SerialBT.println(nameOut);
+        recTime=true;
+        break;
+    case 'I': //do not inclue time in output string in case we want to toggle off
+        nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9";
+        SerialBT.println(nameOut);
+        recTime=false;
         break;
     default:
         SerialBT.flush();
