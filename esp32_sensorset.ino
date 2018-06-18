@@ -13,46 +13,46 @@ BluetoothSerial SerialBT;
 int capPins[]={14,32,15,33,27,12,13}; // All Capacitive Pins available on the ESP 32. Edit pins to be used here
 String capName[]={"Touch_0,","Touch_2,","Touch_3,","Touch_4,","Touch_5,","Touch_6,","Touch_7,","Touch_8,","Touch_9,"};
 String nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9";
+String valOut="";
 int capActive=7;
 unsigned long curr; //this is a time holder used to monitor uptime on battery power
 boolean constRun=false; //this tells whether or not to simply run as fast as data can be obtained
 boolean accelOn=false; //tells whether or not to run accelerometer
 boolean uptimeOn=false; //
+Adafruit_BNO055 bno = Adafruit_BNO055();
 
-void setup() {SerialBT.begin("ESP32accel");bno.setExtCrystalUse(true);}
+void setup() {
+  SerialBT.begin("ESP32accel");
+  bno.setExtCrystalUse(true);
+}
 
 void loop() {
-  if (SerialBT.available() > 0){int serialData = BTserial.read(); 
-    cont=false;  
-    decider(serialData);}  
-  String valOut="";
+  if (SerialBT.available() > 0){int serialData = SerialBT.read(); decider(serialData);}  
   if(constRun){getVals();}
-  if(accelOn){getDirs();}
-  BTserial.println(valOut); 
   delayMicroseconds(100);
 }
 
 void getVals(){//cycle through the active capacitor pins and form CSV string of readings 
   int currentRead=0;
+  String valOut="";
   for(int x=0;x<capActive; x++){
     currentRead=touchRead(capPins[x]);//read active ports
     valOut+=currentRead;//append reading to value out
     if (x<capActive-1){valOut+="," ;}
   }
-  if(accelOn){valOut+=",":}
+  if(accelOn){
+    imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
+    valOut+=",";
+    valOut +=euler.x();
+    valOut +=",";
+    valOut += euler.y();
+    valOut += ",";
+    valOut +=euler.z();
+    }
+SerialBT.println(valOut);  
 }
-void getDirs(){
-  imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-  valOut +=euler.x());
-  valOut +=",";
-  valOut += euler.y());
-  valout += ",";
-  valOut +=euler.z());
-  }
- }
 
-void uptime()
-{
+void uptime(){
  long days=0;
  long hours=0;
  long mins=0;
@@ -65,23 +65,24 @@ void uptime()
  mins=mins-(hours*60); //subtract the coverted minutes to hours in order to display 59 minutes max
  hours=hours-(days*24); //subtract the coverted hours to days in order to display 23 hours max
  //Display results
- BTserial.println("Running Time");
- BTserial.println("------------");
+ SerialBT.println("Running Time");
+ SerialBT.println("------------");
    if (days>0) // days will displayed only if value is greater than zero
  {
-   BTserial.print(days);
-   BTserial.print(" days and :");
+   SerialBT.print(days);
+   SerialBT.print(" days and :");
  }
- Btserial.print(hours);
- BTserial.print(":");
- BTserial.print(mins);
- BTserial.print(":");
- BTserial.println(secs);
+ SerialBT.print(hours);
+ SerialBT.print(":");
+ SerialBT.print(mins);
+ SerialBT.print(":");
+ SerialBT.println(secs);
 }
+
 void decider(int serialData){
   switch(serialData){
     case 'A': //get names
-       BTserial.println(nameOut);
+       SerialBT.println(nameOut);
         break;
     case 'B': //read active caps
         getVals();
@@ -101,6 +102,7 @@ void decider(int serialData){
     case 'G': //give current uptime
         uptime();
     default:
-        BTserial.flush();
+        SerialBT.flush();
         break;        
   }
+}    
