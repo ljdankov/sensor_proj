@@ -143,6 +143,7 @@ class serialPlot:
         self.recording=False
         self.newlim=True
         self.Plotting=False
+        self.startPlot=0
         
     def serialInit(self, port):
         app.text_message.insert(INSERT, 'Trying to connect to: ' + str(port) + ' at ' + str(self.baud) + ' BAUD.\n')
@@ -163,7 +164,9 @@ class serialPlot:
             self.thread = Thread(target=self.backgroundThread) # Make a thread to read serial port in the background
             self.thread.start()
             self.sendSerialData('D')  # Stop reading sensors on teensy. Included in case of 'non graceful exit'
+            app.text_message.insert(INSERT,"Sending names...\n")
             self.sendSerialData('A') # Request port names
+            
                 
     def backgroundThread(self):
         #############################################
@@ -199,18 +202,20 @@ class serialPlot:
                 self.lineLabel=[] # Clear our previous line labels
                 self.data=[] # Clear our previous data
                 self.lines=[] # Reset our lines
+                self.startPlot=0
                 ax.set_ylim(self.ymin,self.ymax) # reset axis limtits
                 ax.set_xlim(self.xmin,self.xmax) # See previous
                 self.timeText = ax.text(0.70, 0.95, '', transform=ax.transAxes) # include frequency data on plot
                 self.leapLabel=['']
             self.lineLabel=self.serialData.split(',') # Split data on comma, this will be total number of incoming data points
-            for i in range(1,len(self.lineLabel)):
+            if self.lineLabel[0]=='Time':
+                self.startPlot=1
+            for i in range(self.startPlot,len(self.lineLabel)):
                 self.lines.append(ax.plot([], [], label=self.lineLabel[i])[0])
             plt.legend(loc="upper left")
             self.newlim=True
             self.Plotting=True
             self.newNames=False
-            print self.lineLabel
             self.lastPlot=len(self.lineLabel)-1 # Numplots are the number of sensor plots we are making. Note that we do not plot the time. this also indicates end of sensor data string
             self.device=self.controller.devices[0] # Get data about leap controller
             if self.device.is_valid: # only record leap data if currently active
@@ -218,7 +223,6 @@ class serialPlot:
             else:
                 self.leapLabel=['']
             self.lineLabel[len(self.lineLabel):len(self.lineLabel)]=self.leapLabel # pin any leap data to end of line labels
-            print self.lineLabel
             for i in range(len(self.lineLabel)):# all items in linelabel need to be saved
                 self.data.append(collections.deque([0] * self.plotMaxLength, maxlen=self.plotMaxLength)) 
             self.initNames=True # flag to let us know that we now have names
@@ -270,7 +274,7 @@ class serialPlot:
                     except:
                         hand_dat.append('NA')
                 hand_dat.append(self.listener.fist) 
-                privateData[self.numPlots+1:self.numPlots+1]=hand_dat
+                privateData[self.lastPlot+1:self.lastPlot+1]=hand_dat
                 if self.listener.fist >.9:
                     app.label7.config(text = "Fist")
                 if self.listener.fist<.1:
@@ -280,10 +284,11 @@ class serialPlot:
             #plot the actual incoming data
             if self.recording==True:
                 self.writer.writerow(privateData)
+            
             for i in range(len(privateData)):
                 self.data[i].append(privateData[i])    # we get the latest data point and append it to our array
-                if i>=1 and i<self.lastPlot: #only plot stuff that has lines
-                    self.lines[i].set_data(range(self.plotMaxLength), self.data[i])
+                if i>=self.startPlot and i<=self.lastPlot: #only plot stuff that has lines
+                    self.lines[i-self.startPlot].set_data(range(self.plotMaxLength), self.data[i])
             self.newData=False
                 
     def sendSerialData(self, data):
@@ -298,6 +303,7 @@ class serialPlot:
         #    stop='D'
         #    self.serialConnention.write(stop.encode('utf-8'))
         data=data+'\n'
+        print data
         self.serialConnection.write(data.encode('utf-8'))
         
 
