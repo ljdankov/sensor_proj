@@ -183,7 +183,7 @@ class serialPlot:
                     self.newNames=True
                     self.Plotting=False
                     self.initPlot()
-                elif lineIn[0].isdigit() and self.Plotting==True:
+                elif lineIn[0].isdigit()==True and self.Plotting==True and lineIn.count(',')==self.lastPlot:
                     # If the first character is a digit we flag that a new line of sensor readings has been taken
                     self.newData=True
                 else:
