@@ -1,43 +1,71 @@
-//this version of arduino code is designed to run on the ESP32 based sleeve or knee brace. It includes as yet unused stub for the accelerometer, and stub for uptime
-
-#include <Wire.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_BNO055.h>
-#include <utility/imumaths.h>
+//This section gets Bluetooth working
 #include "BluetoothSerial.h"
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
 #endif
+BluetoothSerial BTserial;
 
-BluetoothSerial SerialBT;
-int capPins[]={14,32,15,33,27,12,13}; // All Capacitive Pins available on the ESP 32. Edit pins to be used here
-String capName[]={"Touch_0,","Touch_2,","Touch_3,","Touch_4,","Touch_5,","Touch_6,","Touch_7,","Touch_8,"};
-String nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Time,";
-String valOut="";
-int capActive=7;
-unsigned long curr; //this is a time holder used to monitor uptime on battery power
-boolean constRun=false; //this tells whether or not to simply run as fast as data can be obtained
-boolean accelOn=false; //tells whether or not to run accelerometer
-boolean recTime=false; //toggle to tell whether or not to record timestamp
+//This section is used to initialize the accelerometer. 
+//Not currently applicale to the teensy as required pins not exposed on teensy
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
 Adafruit_BNO055 bno = Adafruit_BNO055();
+//This section initializes the touch pins
+int capPins[]={A6,A9,A8,A7,A10,A11}; // All Capacitive Pins available on the ESP 32. 
+//Note that A12 does not produce any signal but does inject a lot of random noise. 
+//When electrode connected to A12 was removed was removed, signal stabilized.
+//Also note A9 and A7 backwards from diagram
+int capSize = sizeof(capPins) / sizeof( int );
+int smoothedVal[12];//holds values to be used for smoothing
+int capActive=capSize;
+//Placeholders for strings
+String timeOut="Time,";
+String pinOut="Touch_6,Touch_8,Touch_3,Touch_9,Touch_7,Touch_5";
+String accOut=",X,Y,Z";
+String nameOut="";
+String valOut="";
+//Booleans
+boolean constRun=false; //toggles constnt vs requeste data collection
+boolean smoothOn=false; //toggles simple smoothing algarithm
+boolean accelOn=false; //toggles accelerometer on/off
+boolean recTime=false; //toggles timestamp recording
+//Timing values
+unsigned long cur; //this is a time holder used to monitor uptime on battery power
+unsigned long starTime;
+float filterVal=.75;
 
 void setup() {
-  SerialBT.begin("ESP32accel");
+  BTserial.begin("ESP32accel");
   bno.setExtCrystalUse(true);
+  setRun(); 
+  nameOut=pinOut;     
 }
 
 void loop() {
-  if (SerialBT.available() > 0){int serialData = SerialBT.read(); decider(serialData);}  
+  if (BTserial.available() > 0){
+    int serialData = BTserial.read(); 
+    if(serialData >=97 && serialData <=122){serialData=serialData-32;}
+      decider(serialData);}  
   if(constRun){getVals();}
-  delayMicroseconds(1000);
+  delayMicroseconds(100);
+}
+
+void setRun(){
+  //included so doing crude filtering on the ESP32 will be an option
+  for(int x=0;x<capSize; x++){//cycle through the active capacitor pins and form CSV string of readings
+      smoothedVal[x]=touchRead(capPins[x]);
+  }
 }
 
 void getVals(){//cycle through the active capacitor pins and form CSV string of readings 
   int currentRead=0;
   String valOut="";
-  if(recTime==true){curr=millis(); valOut+=curr; valOut+=",";}
+  if(recTime==true){cur=millis()-starTime; valOut+=cur; valOut+=",";}
   for(int x=0;x<capActive; x++){
     currentRead=touchRead(capPins[x]);//read active ports
+    if(smoothOn){currentRead =  smooth(currentRead, filterVal, smoothedVal[x]);smoothedVal[x]=currentRead;}//apply smoothing if flag set
     valOut+=currentRead;//append reading to value out
     if( x <capActive-1){valOut+=",";} 
   }
@@ -51,7 +79,15 @@ void getVals(){//cycle through the active capacitor pins and form CSV string of 
     valOut += ",";
     valOut +=euler.z();
     }
-SerialBT.println(valOut);  
+BTserial.println(valOut);  
+}
+
+int smooth(int data, float filterVal, int smoothed){
+  //note that this is not fully implemented. It was started and the abandoned
+  if (filterVal > 1){filterVal = .99;}
+  else if (filterVal <= 0){filterVal = 0;}
+  smoothed = (data * (1 - filterVal)) + (smoothed  *  filterVal);
+  return smoothed;
 }
 
 void uptime(){
@@ -59,8 +95,8 @@ void uptime(){
  long hours=0;
  long mins=0;
  long secs=0;
- curr = millis();
- secs=curr/1000;//convect milliseconds to seconds
+ cur = millis();
+ secs=cur/1000;//convect milliseconds to seconds
  mins=secs/60; //convert seconds to minutes
  hours=mins/60; //convert minutes to hours
  days=hours/24; //convert hours to days
@@ -68,59 +104,71 @@ void uptime(){
  mins=mins-(hours*60); //subtract the coverted minutes to hours in order to display 59 minutes max
  hours=hours-(days*24); //subtract the coverted hours to days in order to display 23 hours max
  //Display results
- SerialBT.println("Running Time");
- SerialBT.println("------------");
+ BTserial.println("Running Time");
+ BTserial.println("------------");
    if (days>0) // days will displayed only if value is greater than zero
  {
-   SerialBT.print(days);
-   SerialBT.print(" days and :");
+   BTserial.print(days);
+   BTserial.print(" days and :");
  }
- SerialBT.print(hours);
- SerialBT.print(":");
- SerialBT.print(mins);
- SerialBT.print(":");
- SerialBT.println(secs);
+ BTserial.print(hours);
+ BTserial.print(":");
+ BTserial.print(mins);
+ BTserial.print(":");
+ BTserial.println(secs);
 }
 
 void decider(int serialData){
   switch(serialData){
     case 'A': //get names
-       SerialBT.println(nameOut);
+       BTserial.println(nameOut);
         break;
     case 'B': //read active caps
         getVals();
         break;
     case 'C': //run full speed
         constRun=true;
+        starTime=millis();
         break;
     case 'D': //stop Run
         constRun=false;
         break;
-    case 'E': //turn on accelerometer
-        accelOn=true;
-        nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9,X,Y,Z";
-        SerialBT.println(nameOut);
+    case 'E': //smoothing on
+        smoothOn=true;
         break;
-    case 'F': //turn off accelerometer
-        accelOn=false;
-        nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9";
-        SerialBT.println(nameOut);
+    case 'F': //smoothing off
+        smoothOn=false;
         break;
-    case 'G': //give current uptime
+    case 'G': //give curent uptime
         uptime();
         break;
     case 'H': //include time in output string this is used for the interface with python data collection tool
-        nameOut="Time,Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9";
-        SerialBT.println(nameOut);
+        nameOut=timeOut+pinOut;
+        if(accelOn){nameOut=nameOut+accOut;}
+        BTserial.println(nameOut);
         recTime=true;
+        starTime=millis();
         break;
     case 'I': //do not inclue time in output string in case we want to toggle off
-        nameOut="Touch_0,Touch_3,Touch_4,Touch_5,Touch_6,Touch_7,Touch_8,Touch_9";
-        SerialBT.println(nameOut);
+        nameOut=pinOut;
+        if(accelOn){nameOut=nameOut+accOut;}
+        BTserial.println(nameOut);
         recTime=false;
         break;
+    case 'J': //turn on accelerometer
+        accelOn=true;
+        nameOut=pinOut+accOut;
+        if(recTime){nameOut=timeOut+pinOut+accOut;}
+        BTserial.println(nameOut);
+        break;
+    case 'K': //turn off accelerometer
+        accelOn=false;
+        nameOut=pinOut;
+        if(recTime){nameOut=timeOut+pinOut;}
+        BTserial.println(nameOut);
+        break;
     default:
-        SerialBT.flush();
+        BTserial.flush();
         break;        
   }
 }    
